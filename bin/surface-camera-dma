@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# Temporary IPU3 workaround: only run before ipu3_imgu has loaded this boot.
+# Security: identity removes IOMMU isolation for the internal camera only.
+# Reboot restores the boot-time DMA setting. Never unbind/unload this driver.
+set -Eeuo pipefail
+export LC_ALL=C
+mode=${1:-status}
+device=0000:00:05.0
+pci=/sys/bus/pci/devices/$device
+driver=/sys/bus/pci/drivers/ipu3-imgu
+die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+if [[ $mode == --help || $mode == -h ]]; then
+  cat <<'EOF'
+Usage: surface-camera-dma status
+       sudo surface-camera-dma enable --accept-camera-dma-risk
+       sudo surface-camera-dma restore
+
+The enable action removes IOMMU DMA isolation for the internal camera controller.
+It requires an exclusive IOMMU group and an unloaded camera driver. It never
+detaches a live driver. Reboot restores DMA protection; restore works only while
+the camera driver is still unloaded. Prefer the installer and Camera feed app.
+EOF
+  exit 0
+fi
+case $mode in
+  status|restore) (( $# <= 1 )) || die 'Unexpected extra arguments.' ;;
+  enable)
+    [[ $# == 2 && $2 == --accept-camera-dma-risk ]] ||
+      die 'enable requires --accept-camera-dma-risk: this disables DMA isolation for the camera controller.'
+    ;;
+  *) die 'Use status, enable --accept-camera-dma-risk, or restore.' ;;
+esac
+[[ $(cat /sys/class/dmi/id/product_name) == 'Surface Book 2' ]] || die 'Wrong computer model.'
+[[ $(cat "$pci/vendor") == 0x8086 && $(cat "$pci/device") == 0x1919 ]] || die 'Wrong PCI device.'
+group=$(readlink -f "$pci/iommu_group")
+[[ $group == /sys/kernel/iommu_groups/* && -r $group/type ]] || die 'No camera IOMMU group.'
+shopt -s nullglob
+members=("$group"/devices/*)
+[[ ${#members[@]} == 1 && ${members[0]##*/} == "$device" ]] || die 'Camera shares its IOMMU group; refusing.'
+original=$(cat "$group/type")
+printf 'Camera %s; group %s; DMA mode %s\n' "$device" "${group##*/}" "$original"
+[[ $mode != status ]] || exit 0
+(( EUID == 0 )) || die 'Administrator authentication required.'
+for utility in flock journalctl modprobe udevadm grep; do
+  command -v "$utility" >/dev/null || die "Missing required utility: $utility"
+done
+exec 9>/run/lock/surface-camera-dma.lock
+flock -n 9 || die 'Another camera preparation is running.'
+log=$(journalctl -b -k --no-pager -o cat) || die 'Cannot inspect kernel health.'
+if printf '%s\n' "$log" | grep -E 'ipu3-imgu.*failed to start|DMAR:.*00:05[.]0|Oops:|BUG:|RIP:.*imgu_' >/dev/null; then
+  die 'A kernel/camera fault occurred this boot. No further driver actions are safe; restart later.'
+fi
+if [[ $mode == enable && ( $original == identity || $original == IDENTITY ) && $(readlink -f "$pci/driver") == "$driver" ]]; then
+  echo 'Camera workaround already active.'
+  exit 0
+fi
+[[ ! -e $pci/driver && ! -d /sys/module/ipu3_imgu ]] || die 'Camera driver already loaded. Use the startup hold and a clean restart; this helper never detaches a live driver.'
+members=("$group"/devices/*)
+[[ ${#members[@]} == 1 && ${members[0]##*/} == "$device" ]] || die 'IOMMU group changed.'
+[[ $(cat "$group/type") == "$original" ]] || die 'DMA mode changed during inspection.'
+if [[ $mode == restore ]]; then
+  printf 'auto\n' > "$group/type"
+  current=$(cat "$group/type")
+  [[ $current == DMA || $current == DMA-FQ ]] || die 'Translated DMA protection not restored.'
+  echo 'Boot-time camera DMA protection restored. Camera driver remains unloaded.'
+  exit 0
+fi
+[[ $original == DMA || $original == DMA-FQ || $original == identity || $original == IDENTITY ]] || die 'Unexpected DMA mode.'
+echo 'Applying the explicitly accepted temporary camera-only DMA bypass before loading its driver.'
+printf 'identity\n' > "$group/type"
+current=$(cat "$group/type")
+[[ $current == identity || $current == IDENTITY ]] || die 'Camera-only bypass did not take effect.'
+# An explicit modprobe loads the named module despite an alias blacklist.
+# Never attempt driver removal on failure: its removal path is known to fault.
+modprobe ipu3_imgu || die 'Camera driver load failed. Stop here; do not retry driver removal.'
+udevadm settle --timeout=10
+[[ $(readlink -f "$pci/driver") == "$driver" && $(cat /sys/module/ipu3_imgu/initstate) == live ]] || die 'Camera driver did not initialize.'
+log=$(journalctl -b -k --no-pager -o cat) || die 'Cannot verify kernel health.'
+if printf '%s\n' "$log" | grep -E 'ipu3-imgu.*failed to start|DMAR:.*00:05[.]0|Oops:|BUG:|RIP:.*imgu_' >/dev/null; then
+  die 'Driver initialization reported a kernel error. Do not start capture.'
+fi
+echo 'Camera driver loaded with the opted-in camera-only DMA bypass. No reboot performed.'

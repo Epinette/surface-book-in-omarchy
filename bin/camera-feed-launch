@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# A second launcher activation brings the existing prompt to the front.
+if command -v hyprctl >/dev/null; then
+  camera_window=$(hyprctl clients -j 2>/dev/null | python3 -c '
+import json, sys
+try:
+    for window in json.load(sys.stdin):
+        if window.get("class") == "camera-feed":
+            print(window["address"])
+            break
+except (ValueError, KeyError):
+    pass
+' || true)
+  if [[ $camera_window =~ ^0x[0-9a-fA-F]+$ ]]; then
+    hyprctl dispatch focuswindow "address:$camera_window" >/dev/null
+    exit 0
+  fi
+fi
+
+exec /usr/bin/foot --app-id=camera-feed --title='Camera feed' \
+  --window-size-chars=76x22 "$HOME/.local/bin/camera-feed"

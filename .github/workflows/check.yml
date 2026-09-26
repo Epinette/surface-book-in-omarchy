@@ -1,0 +1,29 @@
+name: Hardware-free checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y python3 gstreamer1.0-tools gstreamer1.0-plugins-base desktop-file-utils
+      - name: Run checks without camera hardware
+        run: bash tests/run.sh
+      - name: Check for generated files
+        run: |
+          git diff --exit-code
+          test -z "$(git status --porcelain --untracked-files=all)"

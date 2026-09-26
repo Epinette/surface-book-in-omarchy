@@ -1,0 +1,211 @@
+#!/usr/bin/env python3
+"""Interactive front-camera controller. Opening the app never starts capture."""
+
+import fcntl
+import os
+from pathlib import Path
+import readline  # noqa: F401 - line editing and in-memory command history
+import signal
+import subprocess
+import sys
+import time
+
+
+class CameraFeed:
+    def __init__(self, helper, runtime, state):
+        self.helper = Path(helper)
+        self.runtime = Path(runtime)
+        self.log = Path(state) / "feed.log"
+        self.process = None
+        self.log.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+
+    def running(self):
+        return self.process is not None and self.process.poll() is None
+
+    def elsewhere(self):
+        # Probe the helper's lock without retaining or deleting its inode.
+        with (self.runtime / "surface-camera.lock").open("a") as handle:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+        return False
+
+    def log_tail(self):
+        try:
+            with self.log.open("rb") as handle:
+                handle.seek(0, os.SEEK_END)
+                handle.seek(max(0, handle.tell() - 8192))
+                return handle.read().decode(errors="replace")
+        except FileNotFoundError:
+            return ""
+
+    def report_error(self, message):
+        print(message)
+        tail = self.log_tail().strip().splitlines()[-10:]
+        if tail:
+            print("\nCamera details:")
+            print("\n".join(tail))
+        print("\nType open to try again, or quit to leave.")
+
+    def open(self):
+        if self.running():
+            print("Camera is already open.")
+            return
+        if self.elsewhere():
+            print("Another camera command is running. Close its terminal first, then type open.")
+            return
+        if not os.access(self.helper, os.X_OK):
+            print(f"Camera helper is missing or not executable: {self.helper}")
+            return
+        print("Opening camera... If a password dialog appears, complete it there.", flush=True)
+        print("Press Ctrl+C to cancel opening.", flush=True)
+        # No terminal input in the background: the existing helper uses pkexec
+        # for any first-use preparation. All camera-driver safeguards stay there.
+        with self.log.open("w") as output:
+            self.process = subprocess.Popen(
+                [str(self.helper), "webcam", "front"],
+                stdin=subprocess.DEVNULL,
+                stdout=output,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                close_fds=True,
+            )
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            if not self.running():
+                self.report_error("Camera could not start.")
+                return
+            if "Redistribute latency" in self.log_tail():
+                # A latency message alone does not prove that frames arrived.
+                # Consume two frames without saving images, with a strict timeout.
+                try:
+                    result = subprocess.run(
+                        ["v4l2-ctl", "-d", "/dev/video42", "--stream-mmap=3",
+                         "--stream-count=2", "--stream-to=/dev/null"],
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=5,
+                        check=False,
+                    )
+                except subprocess.TimeoutExpired:
+                    result = None
+                if result is not None and result.returncode == 0 and self.running():
+                    print('Camera is OPEN. Select "Surface Camera" in Zoom or WhatsApp.')
+                    print("Keep this window open. Type close to stop the feed.")
+                    return
+                self.close(announce=False)
+                self.report_error("The camera started, but live frames could not be verified.")
+                return
+            time.sleep(0.2)
+        self.close(announce=False)
+        self.report_error("Camera startup timed out. The feed has been stopped.")
+
+    def close(self, announce=True):
+        process = self.process
+        if process is None or process.poll() is not None:
+            self.process = None
+            if announce:
+                if self.elsewhere():
+                    print("Another terminal owns the camera feed. Close that terminal to stop it.")
+                else:
+                    print("Camera is already closed.")
+            return
+        # Signal only the session we created. Never unload or rebind a driver.
+        for sig, seconds in ((signal.SIGINT, 5), (signal.SIGTERM, 3), (signal.SIGKILL, 2)):
+            try:
+                os.killpg(process.pid, sig)
+            except ProcessLookupError:
+                break
+            try:
+                process.wait(timeout=seconds)
+                break
+            except subprocess.TimeoutExpired:
+                continue
+        if process.poll() is None:
+            print("Camera process has not exited. Do not start another feed; inspect the camera log.")
+            return
+        self.process = None
+        if announce:
+            print("Camera is CLOSED.")
+
+    def status(self):
+        if self.running():
+            print("Camera is OPEN.")
+        elif self.elsewhere():
+            print("Another camera command is running in a different terminal.")
+        elif self.process is not None:
+            self.report_error("The camera feed stopped unexpectedly.")
+            self.process = None
+        else:
+            print("Camera is CLOSED.")
+
+
+def help_text():
+    print("  open    Start the front-camera feed")
+    print("  close   Stop the feed and stay in this app")
+    print("  status  Check whether the feed is running")
+    print("  quit    Stop the feed and exit")
+    print("\nClosing this window also stops the feed started here.\n")
+
+
+def main():
+    os.umask(0o077)
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if not runtime or not Path(runtime).is_dir() or Path(runtime).stat().st_uid != os.getuid():
+        print("Open Camera feed from your logged-in desktop.")
+        return 1
+    # Prevent two control windows from fighting over a single camera.
+    app_lock = (Path(runtime) / "camera-feed-app.lock").open("a")
+    try:
+        fcntl.flock(app_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print("Camera feed is already open in another window.")
+        return 0
+    state = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "camera-feed"
+    camera = CameraFeed(Path(__file__).resolve().with_name("surface-camera"), runtime, state)
+
+    def window_closed(signum, frame):
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, window_closed)
+    signal.signal(signal.SIGHUP, window_closed)
+    print("\n  CAMERA FEED\n")
+    help_text()
+    camera.status()
+    try:
+        while True:
+            try:
+                command = input("\ncamera> ").strip().lower()
+                if command in ("quit", "exit", "q"):
+                    break
+                if command in ("open", "start"):
+                    camera.open()
+                elif command in ("close", "stop"):
+                    camera.close()
+                elif command == "status":
+                    camera.status()
+                elif command in ("help", "?"):
+                    help_text()
+                elif command:
+                    print("Use open, close, status, help, or quit.")
+            except KeyboardInterrupt:
+                print()
+                camera.close()
+            except EOFError:
+                break
+            except OSError as error:
+                camera.close(announce=False)
+                print(f"Could not control the camera: {error}")
+    finally:
+        # Prevent repeated Ctrl+C or a window-close signal interrupting cleanup.
+        for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            signal.signal(sig, signal.SIG_IGN)
+        camera.close(announce=False)
+        app_lock.close()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,359 @@
+#!/usr/bin/env bash
+# Persistent Surface Book 2 speaker workaround for Omarchy.
+# This script changes boot configuration only. It never unloads audio drivers,
+# retasks codec pins, plays sound, or reboots the computer.
+set -Eeuo pipefail
+
+fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+note() { printf '%s\n' "$*"; }
+
+usage() {
+  cat <<'HELP'
+Usage: ./scripts/configure-audio check
+       sudo ./scripts/configure-audio apply
+       sudo ./scripts/configure-audio rollback
+
+  check     Show hardware, configuration, active driver, and recent DMA errors
+  apply     Select the Intel AVS driver at boot and rebuild the Omarchy UKI
+  rollback  Restore the configuration that preceded the first apply
+
+Apply and rollback never unload a live driver or reboot. Save your work and
+reboot manually after a successful change. This script supports only the
+tested Microsoft Surface Book 2 audio controller (Intel 8086:9d71).
+HELP
+}
+
+managed_config() {
+  cat <<'CONFIG'
+# Microsoft Surface Book 2 (Intel 8086:9d71 / Realtek ALC298)
+# Use Intel AVS instead of legacy snd_hda_intel; the legacy DMA path
+# repeatedly underruns on this machine (stream 7 dma error: 0x28/0x2c).
+options snd_intel_dspcfg dsp_driver=4
+CONFIG
+}
+
+set_system_paths() {
+  SYS_ROOT=/sys
+  PROC_ROOT=/proc
+  ETC_ROOT=/etc
+  MODULES_ROOT=/usr/lib/modules
+  FIRMWARE_ROOT=/usr/lib/firmware
+  STATE_ROOT=/var/lib/surface-book-in-omarchy/audio
+  CONFIG_PATH=$ETC_ROOT/modprobe.d/90-surface-book2-audio.conf
+}
+
+machine_summary() {
+  local model='unknown' vendor='missing' device='missing' driver='unbound' codec='not visible'
+  [[ -r $SYS_ROOT/class/dmi/id/product_name ]] && model=$(< "$SYS_ROOT/class/dmi/id/product_name")
+  [[ -r $SYS_ROOT/bus/pci/devices/0000:00:1f.3/vendor ]] &&
+    vendor=$(< "$SYS_ROOT/bus/pci/devices/0000:00:1f.3/vendor")
+  [[ -r $SYS_ROOT/bus/pci/devices/0000:00:1f.3/device ]] &&
+    device=$(< "$SYS_ROOT/bus/pci/devices/0000:00:1f.3/device")
+  if [[ -L $SYS_ROOT/bus/pci/devices/0000:00:1f.3/driver/module ]]; then
+    driver=$(basename "$(readlink -f "$SYS_ROOT/bus/pci/devices/0000:00:1f.3/driver/module")")
+  fi
+  local codec_file
+  shopt -s nullglob
+  for codec_file in "$PROC_ROOT"/asound/card*/codec\#*; do
+    if grep -q '^Vendor Id: 0x10ec0298$' "$codec_file" 2>/dev/null; then
+      codec=$(sed -n 's/^Codec: //p' "$codec_file" | head -n 1)
+      break
+    fi
+  done
+  shopt -u nullglob
+  printf 'Model:              %s\n' "$model"
+  printf 'Audio controller:   %s:%s at 0000:00:1f.3\n' "${vendor#0x}" "${device#0x}"
+  printf 'Codec:              %s\n' "$codec"
+  printf 'Active driver:      %s\n' "$driver"
+}
+
+validate_machine() {
+  local board device model os_id subsystem_device subsystem_vendor sys_vendor vendor
+  local codec_file codec_seen=0 codec_match=0
+  [[ -r $ETC_ROOT/os-release ]] || fail 'Cannot identify the operating system.'
+  os_id=$(sed -n 's/^ID=//p' "$ETC_ROOT/os-release" | tail -n 1 | tr -d '"')
+  [[ $os_id == omarchy ]] || fail "This helper supports Omarchy; detected OS ID: ${os_id:-unknown}"
+  [[ -r $SYS_ROOT/class/dmi/id/sys_vendor && -r $SYS_ROOT/class/dmi/id/board_name ]] ||
+    fail 'Cannot identify the system vendor and board.'
+  sys_vendor=$(< "$SYS_ROOT/class/dmi/id/sys_vendor")
+  board=$(< "$SYS_ROOT/class/dmi/id/board_name")
+  [[ $sys_vendor == 'Microsoft Corporation' && $board == 'Surface Book 2' ]] ||
+    fail "Expected Microsoft Surface Book 2 board; detected: $sys_vendor / $board"
+  [[ -r $SYS_ROOT/class/dmi/id/product_name ]] || fail 'Cannot identify this computer.'
+  model=$(< "$SYS_ROOT/class/dmi/id/product_name")
+  [[ $model == 'Surface Book 2' ]] ||
+    fail "This workaround only supports Surface Book 2; detected: $model"
+  [[ -r $SYS_ROOT/bus/pci/devices/0000:00:1f.3/vendor &&
+     -r $SYS_ROOT/bus/pci/devices/0000:00:1f.3/device ]] ||
+    fail 'The expected audio controller at 0000:00:1f.3 is missing.'
+  vendor=$(< "$SYS_ROOT/bus/pci/devices/0000:00:1f.3/vendor")
+  device=$(< "$SYS_ROOT/bus/pci/devices/0000:00:1f.3/device")
+  [[ $vendor == 0x8086 && $device == 0x9d71 ]] ||
+    fail "Expected Intel 8086:9d71 audio; detected ${vendor#0x}:${device#0x}."
+  [[ -r $SYS_ROOT/bus/pci/devices/0000:00:1f.3/subsystem_vendor &&
+     -r $SYS_ROOT/bus/pci/devices/0000:00:1f.3/subsystem_device ]] ||
+    fail 'The audio controller subsystem IDs are unavailable.'
+  subsystem_vendor=$(< "$SYS_ROOT/bus/pci/devices/0000:00:1f.3/subsystem_vendor")
+  subsystem_device=$(< "$SYS_ROOT/bus/pci/devices/0000:00:1f.3/subsystem_device")
+  [[ $subsystem_vendor == 0x8086 && $subsystem_device == 0x7270 ]] ||
+    fail "Expected audio subsystem 8086:7270; detected ${subsystem_vendor#0x}:${subsystem_device#0x}."
+
+  shopt -s nullglob
+  for codec_file in "$PROC_ROOT"/asound/card*/codec\#*; do
+    codec_seen=1
+    grep -q '^Vendor Id: 0x10ec0298$' "$codec_file" 2>/dev/null && codec_match=1
+  done
+  shopt -u nullglob
+  if (( codec_seen && !codec_match )); then
+    fail 'ALC298 (10ec:0298) was not found among the visible audio codecs.'
+  elif (( !codec_seen )); then
+    note 'Warning: ALSA codec details are unavailable; continuing from the exact model and PCI ID.'
+  fi
+}
+
+validate_no_retask() {
+  local found=()
+  [[ -e $ETC_ROOT/modprobe.d/hda-jack-retask.conf ]] &&
+    found+=("$ETC_ROOT/modprobe.d/hda-jack-retask.conf")
+  [[ -e $FIRMWARE_ROOT/hda-jack-retask.fw ]] &&
+    found+=("$FIRMWARE_ROOT/hda-jack-retask.fw")
+  if (( ${#found[@]} )); then
+    printf 'Active hda-jack-retask artifact(s):\n' >&2
+    printf '  %s\n' "${found[@]}" >&2
+    fail 'Disable these boot-time pin overrides before selecting AVS. Do not use hda-jack-retask Apply now with AVS.'
+  fi
+}
+
+validate_no_conflicting_dsp_options() {
+  local file conflicts=()
+  local files=()
+  if [[ -r $PROC_ROOT/cmdline ]] &&
+     grep -Eq '(^|[[:space:]])snd[-_]intel[-_]dspcfg[.]dsp_driver=' "$PROC_ROOT/cmdline"; then
+    fail 'The kernel command line already sets snd_intel_dspcfg.dsp_driver; remove that conflict first.'
+  fi
+  shopt -s nullglob
+  files=("$ETC_ROOT"/modprobe.d/*.conf /usr/lib/modprobe.d/*.conf)
+  shopt -u nullglob
+  for file in "${files[@]}"; do
+    [[ $file == "$CONFIG_PATH" ]] && continue
+    if grep -Eq '^[[:space:]]*options[[:space:]]+snd_intel_dspcfg([[:space:]]|$)' "$file"; then
+      conflicts+=("$file")
+    fi
+  done
+  if (( ${#conflicts[@]} )); then
+    printf 'Conflicting snd_intel_dspcfg option(s):\n' >&2
+    printf '  %s\n' "${conflicts[@]}" >&2
+    fail 'Resolve these options first so the selected DSP driver is deterministic.'
+  fi
+}
+
+validate_boot_tools() {
+  local command firmware kernel
+  local mkinit_configs=()
+  for command in modinfo pacman limine-mkinitcpio; do
+    command -v "$command" >/dev/null || fail "Required Omarchy boot tool missing: $command"
+  done
+  modinfo snd_soc_avs >/dev/null 2>&1 || fail 'The running kernel does not provide the Intel AVS driver.'
+  modinfo -F alias snd_soc_avs | grep -Eqi 'v00008086d00009D71' ||
+    fail 'The installed Intel AVS driver does not advertise support for PCI 8086:9d71.'
+  firmware=$(modinfo -F firmware snd_soc_avs | grep -x 'intel/avs/skl/dsp_basefw.bin' || true)
+  [[ -n $firmware ]] || fail 'The Intel AVS module does not request the tested Skylake-family firmware.'
+  compgen -G "$FIRMWARE_ROOT/$firmware" >/dev/null ||
+  compgen -G "$FIRMWARE_ROOT/$firmware.*" >/dev/null ||
+    fail "Required Intel AVS firmware is missing: $firmware"
+  [[ -f $ETC_ROOT/limine-entry-tool.conf ]] || fail 'Omarchy Limine boot configuration was not found.'
+  [[ -f $ETC_ROOT/mkinitcpio.conf ]] && mkinit_configs+=("$ETC_ROOT/mkinitcpio.conf")
+  shopt -s nullglob
+  mkinit_configs+=("$ETC_ROOT"/mkinitcpio.conf.d/*.conf)
+  shopt -u nullglob
+  (( ${#mkinit_configs[@]} )) || fail 'No mkinitcpio configuration was found.'
+  grep -Eh '^[[:space:]]*HOOKS=' "${mkinit_configs[@]}" |
+    grep -Eq '(^|[=([:space:]])modconf([)[:space:]]|$)' ||
+    fail 'The effective mkinitcpio configuration does not include the modconf hook.'
+  pacman -Q limine-mkinitcpio-hook >/dev/null 2>&1 ||
+    fail 'The Limine mkinitcpio integration is not installed.'
+  kernel=$(uname -r)
+  [[ -r $MODULES_ROOT/$kernel/pkgbase ]] ||
+    fail 'Files for the running kernel are missing. Reboot into the installed kernel first.'
+  KERNEL_BASE=$(< "$MODULES_ROOT/$kernel/pkgbase")
+  [[ $KERNEL_BASE =~ ^linux[-a-zA-Z0-9]*$ ]] || fail 'Cannot identify the running kernel package safely.'
+  pacman -Q "$KERNEL_BASE" >/dev/null 2>&1 ||
+    fail 'The running kernel package is not installed.'
+}
+
+config_is_managed() {
+  [[ -f $CONFIG_PATH && ! -L $CONFIG_PATH ]] && cmp -s "$WORK_DIR/managed.conf" "$CONFIG_PATH"
+}
+
+capture_current_config() {
+  local marker=$1 destination=$2
+  [[ ! -L $CONFIG_PATH ]] || fail "Refusing to replace symbolic link: $CONFIG_PATH"
+  if [[ -e $CONFIG_PATH ]]; then
+    [[ -f $CONFIG_PATH ]] || fail "Refusing to replace non-file: $CONFIG_PATH"
+    install -m 600 "$CONFIG_PATH" "$destination"
+    printf 'file\n' > "$marker"
+  else
+    printf 'absent\n' > "$marker"
+  fi
+}
+
+restore_captured_config() {
+  local marker=$1 source=$2 state
+  read -r state < "$marker"
+  case "$state" in
+    file) install -m 644 "$source" "$CONFIG_PATH" ;;
+    absent) rm -f -- "$CONFIG_PATH" ;;
+    *) fail 'Internal configuration snapshot is invalid.' ;;
+  esac
+}
+
+remember_original_config() {
+  local marker=$STATE_ROOT/previous-state temporary
+  if [[ -e $marker ]]; then
+    [[ -f $marker && ! -L $marker ]] || fail "Invalid rollback state: $marker"
+    return
+  fi
+  install -d -m 700 "$STATE_ROOT"
+  temporary=$(mktemp "$STATE_ROOT/.previous-state-XXXXXX")
+  if [[ -e $CONFIG_PATH ]] && ! config_is_managed; then
+    install -m 600 "$CONFIG_PATH" "$STATE_ROOT/previous-config"
+    printf 'file\n' > "$temporary"
+    note "Saved the preceding configuration under $STATE_ROOT."
+  else
+    printf 'absent\n' > "$temporary"
+  fi
+  chmod 600 "$temporary"
+  mv -fT -- "$temporary" "$marker"
+}
+
+install_managed_config() {
+  local temporary
+  temporary=$(mktemp "$ETC_ROOT/modprobe.d/.surface-book2-audio-XXXXXX")
+  install -m 644 "$WORK_DIR/managed.conf" "$temporary"
+  mv -fT -- "$temporary" "$CONFIG_PATH"
+}
+
+restore_original_config() {
+  local state
+  if [[ ! -f $STATE_ROOT/previous-state || -L $STATE_ROOT/previous-state ]]; then
+    note 'No saved predecessor exists; removing the exact managed configuration.'
+    rm -- "$CONFIG_PATH"
+    return
+  fi
+  read -r state < "$STATE_ROOT/previous-state"
+  case "$state" in
+    file)
+      [[ -f $STATE_ROOT/previous-config && ! -L $STATE_ROOT/previous-config ]] ||
+        fail 'The saved predecessor configuration is missing or invalid.'
+      install -m 644 "$STATE_ROOT/previous-config" "$CONFIG_PATH"
+      ;;
+    absent) rm -- "$CONFIG_PATH" ;;
+    *) fail 'The saved predecessor state is invalid.' ;;
+  esac
+}
+
+rebuild_boot() {
+  local status=0
+  note "Rebuilding the Omarchy UKI for $KERNEL_BASE through Limine."
+  limine-mkinitcpio "$KERNEL_BASE" > "$WORK_DIR/rebuild.log" 2>&1 || status=$?
+  cat "$WORK_DIR/rebuild.log"
+  if (( status != 0 )) ||
+     grep -Eiq '(^|[^[:alpha:]])error:|mkinitcpio failed|failed (to (build|generate|install)|for kernel)' "$WORK_DIR/rebuild.log"; then
+    return 1
+  fi
+}
+
+check_audio() {
+  local avs_support='missing' config_exact=0 driver='unbound' parameter='not loaded'
+  local config_state='not installed' errors='unavailable' result='NOT ACTIVE'
+  machine_summary
+  if [[ -L $SYS_ROOT/bus/pci/devices/0000:00:1f.3/driver/module ]]; then
+    driver=$(basename "$(readlink -f "$SYS_ROOT/bus/pci/devices/0000:00:1f.3/driver/module")")
+  fi
+  if [[ -r $SYS_ROOT/module/snd_intel_dspcfg/parameters/dsp_driver ]]; then
+    parameter=$(< "$SYS_ROOT/module/snd_intel_dspcfg/parameters/dsp_driver")
+  fi
+  if command -v modinfo >/dev/null &&
+     modinfo -F alias snd_soc_avs 2>/dev/null | grep -Eqi 'v00008086d00009D71'; then
+    avs_support='available'
+  fi
+  if [[ -f $CONFIG_PATH && ! -L $CONFIG_PATH ]]; then
+    if cmp -s <(managed_config) "$CONFIG_PATH"; then
+      config_state='managed AVS selection installed'
+      config_exact=1
+    else config_state="different file at $CONFIG_PATH"; fi
+  elif [[ -L $CONFIG_PATH ]]; then
+    config_state="unsafe symbolic link at $CONFIG_PATH"
+  fi
+  if command -v journalctl >/dev/null; then
+    errors=$(journalctl -k -b --no-pager -q 2>/dev/null |
+      grep -Ec 'snd_hda_intel.*stream [0-9]+ dma error|IRQ timing workaround' || true)
+  fi
+  if (( config_exact )) && [[ $parameter == 4 && $driver == snd_soc_avs ]]; then
+    result='ACTIVE'
+  elif (( config_exact )); then
+    result='PENDING REBOOT'
+  elif [[ $driver == snd_soc_avs ]]; then
+    result='ROLLBACK STAGED OR LIVE-ONLY; reboot for kernel auto-selection'
+  fi
+  printf 'AVS kernel support:  %s\n' "$avs_support"
+  printf 'DSP driver setting: %s\n' "$parameter"
+  printf 'Boot configuration: %s\n' "$config_state"
+  printf 'Legacy DMA errors:  %s since boot (may predate the active driver)\n' "$errors"
+  printf 'Result:             %s\n' "$result"
+  note 'Expected after apply + reboot: active driver snd_soc_avs, DSP setting 4, and no new legacy DMA errors during playback.'
+}
+
+apply_fix() {
+  (( EUID == 0 )) || fail 'Administrator privileges are required. Run: sudo ./scripts/configure-audio apply'
+  validate_machine
+  validate_no_retask
+  validate_no_conflicting_dsp_options
+  validate_boot_tools
+  capture_current_config "$WORK_DIR/current-state" "$WORK_DIR/current-config"
+  remember_original_config
+  install_managed_config
+  if ! rebuild_boot; then
+    restore_captured_config "$WORK_DIR/current-state" "$WORK_DIR/current-config"
+    fail 'Boot rebuild failed. The configuration file was restored, but boot images may be partially updated. Repair/rebuild them before rebooting.'
+  fi
+  note 'AVS boot selection installed. No live driver was unloaded and no reboot was performed.'
+  note 'Save your work, reboot manually, then run ./scripts/configure-audio check.'
+}
+
+rollback_fix() {
+  (( EUID == 0 )) || fail 'Administrator privileges are required. Run: sudo ./scripts/configure-audio rollback'
+  validate_boot_tools
+  [[ -e $CONFIG_PATH ]] || { note 'The managed AVS configuration is not installed; nothing changed.'; return; }
+  [[ ! -L $CONFIG_PATH && -f $CONFIG_PATH ]] || fail "Refusing to change invalid path: $CONFIG_PATH"
+  config_is_managed || fail "The configuration at $CONFIG_PATH was modified; refusing to remove it."
+  capture_current_config "$WORK_DIR/current-state" "$WORK_DIR/current-config"
+  restore_original_config
+  if ! rebuild_boot; then
+    restore_captured_config "$WORK_DIR/current-state" "$WORK_DIR/current-config"
+    fail 'Boot rebuild failed. The managed configuration was restored, but boot images may be partially updated. Repair/rebuild them before rebooting.'
+  fi
+  rm -f -- "$STATE_ROOT/previous-config" "$STATE_ROOT/previous-state"
+  rmdir -- "$STATE_ROOT" 2>/dev/null || true
+  note 'The AVS selection was rolled back. No live driver was unloaded and no reboot was performed.'
+  note 'Save your work and reboot manually for the restored boot configuration to take effect.'
+}
+
+main() {
+  (( $# == 1 )) || { usage >&2; exit 2; }
+  set_system_paths
+  export PATH=/usr/bin:/bin LC_ALL=C
+  case "$1" in
+    check) check_audio ;;
+    apply|rollback)
+      WORK_DIR=$(mktemp -d /tmp/surface-audio-XXXXXX)
+      trap 'rm -rf -- "$WORK_DIR"' EXIT
+      managed_config > "$WORK_DIR/managed.conf"
+      "$1"_fix
+      ;;
+    -h|--help|help) usage ;;
+    *) usage >&2; fail "Unknown command: $1" ;;
+  esac
+}
+
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; fi

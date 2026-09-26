@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# Called only for an explicit installer/uninstaller opt-in. Never captures,
+# unloads, unbinds, changes the current IOMMU mode, or reboots.
+set -Eeuo pipefail
+
+fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+note() { printf '%s\n' "$*"; }
+
+managed_config() {
+  cat <<'CONFIG'
+# Surface Book 2: keep the faulty IPU3 image processor unbound until the
+# user-approved camera-only DMA workaround is applied with surface-camera-dma.
+# Explicit modprobe ipu3_imgu still works. This does not disable DMA protection.
+blacklist ipu3_imgu
+CONFIG
+}
+
+validate_machine() {
+  local device=$SYS_ROOT/bus/pci/devices/0000:00:05.0 model
+  [[ -r $SYS_ROOT/class/dmi/id/product_name ]] || fail 'Cannot identify this computer.'
+  model=$(cat "$SYS_ROOT/class/dmi/id/product_name")
+  [[ $model == 'Surface Book 2' ]] || fail "This workaround only supports Surface Book 2; detected: $model"
+  [[ -r $device/vendor && -r $device/device ]] || fail 'The expected camera controller is missing.'
+  [[ $(cat "$device/vendor") == 0x8086 && $(cat "$device/device") == 0x1919 ]] ||
+    fail 'The controller is not the expected Intel 8086:1919 IPU3 device.'
+  [[ -d $device/iommu_group/devices ]] || fail 'The camera has no IOMMU group; refusing boot changes.'
+  local members=()
+  shopt -s nullglob
+  members=("$device/iommu_group/devices/"*)
+  (( ${#members[@]} == 1 )) && [[ ${members[0]##*/} == 0000:00:05.0 ]] ||
+    fail 'The IOMMU group is not exclusive to the camera; refusing boot changes.'
+}
+
+validate_boot_tools() {
+  local command kernel
+  for command in omarchy pacman limine-mkinitcpio; do
+    command -v "$command" >/dev/null || fail "Required Omarchy boot tool missing: $command"
+  done
+  [[ -f $ETC_ROOT/limine-entry-tool.conf ]] || fail 'Omarchy Limine boot configuration was not found.'
+  pacman -Q limine-mkinitcpio-hook >/dev/null 2>&1 || fail 'The Limine mkinitcpio integration is not installed.'
+  kernel=$(uname -r)
+  [[ -r $MODULES_ROOT/$kernel/pkgbase ]] ||
+    fail 'Files for the running kernel are missing. Reboot manually into the installed kernel first.'
+  KERNEL_BASE=$(cat "$MODULES_ROOT/$kernel/pkgbase")
+  [[ $KERNEL_BASE =~ ^linux[-a-zA-Z0-9]*$ ]] || fail 'Cannot identify the running kernel package safely.'
+  pacman -Q "$KERNEL_BASE" >/dev/null 2>&1 || fail 'The running kernel package is not installed.'
+  [[ -f $MODULES_ROOT/$kernel/modules.builtin ]] || fail 'Running kernel module metadata is missing.'
+}
+
+rebuild_boot() {
+  local status=0
+  note "Rebuilding boot images for $KERNEL_BASE through Limine."
+  limine-mkinitcpio "$KERNEL_BASE" > "$WORK_DIR/rebuild.log" 2>&1 || status=$?
+  cat "$WORK_DIR/rebuild.log"
+  # Some versions of the Limine hook return success even when mkinitcpio failed
+  # for one kernel. Treat its error diagnostics as failure as well.
+  if (( status != 0 )) || grep -Eiq '(^|[^[:alpha:]])error:|mkinitcpio failed|failed (to (build|generate|install)|for kernel)' "$WORK_DIR/rebuild.log"; then
+    return 1
+  fi
+}
+
+configure() {
+  local action=$1 config=$ETC_ROOT/modprobe.d/90-surface-camera-hold.conf existed=0
+  managed_config > "$WORK_DIR/managed.conf"
+  [[ -d $ETC_ROOT/modprobe.d ]] || fail 'The modprobe configuration directory is missing.'
+  [[ ! -L $config ]] || fail "Refusing to change a symbolic link: $config"
+  if [[ -e $config ]]; then
+    [[ -f $config ]] && cmp -s "$WORK_DIR/managed.conf" "$config" ||
+      fail "A different configuration already exists at $config. It was left untouched."
+    existed=1
+  fi
+  if [[ $action == enable ]]; then
+    if (( !existed )); then install -m 644 "$WORK_DIR/managed.conf" "$config"; fi
+  else
+    if (( !existed )); then
+      note 'No managed boot hold configuration is installed.'
+      return
+    fi
+    rm -- "$config"
+  fi
+  if ! rebuild_boot; then
+    # Restore only the exact file state we changed. A boot-image generator may
+    # have touched images before failing, so do not promise an image rollback.
+    if (( existed )); then install -m 644 "$WORK_DIR/managed.conf" "$config"
+    else rm -f -- "$config"; fi
+    fail 'Boot rebuild failed. The configuration file was restored, but boot images may be partially updated. Inspect the output and repair/rebuild them before rebooting; consent was not newly granted.'
+  fi
+  if [[ $action == enable ]]; then
+    note 'Managed camera-driver boot hold configured. No DMA mode was changed during installation.'
+    if [[ -d $SYS_ROOT/module/ipu3_imgu || -e $SYS_ROOT/bus/pci/devices/0000:00:05.0/driver ]]; then
+      note 'The camera driver is already loaded. Save your work and reboot manually later before using the workaround.'
+    fi
+  else
+    note 'Managed camera-driver boot hold removed. Reboot manually later to restore the normal boot behavior.'
+    note 'The current driver and IOMMU mode are unchanged.'
+  fi
+}
+
+main() {
+  (( $# == 1 )) && [[ $1 == enable || $1 == disable ]] || fail 'Usage: configure-workaround enable|disable (called by the installer).'
+  (( EUID == 0 )) || fail 'Administrator authentication is required; use install.sh or uninstall.sh.'
+  # Fixed system paths: caller environment cannot redirect privileged writes.
+  export PATH=/usr/bin:/bin LC_ALL=C
+  umask 022
+  SYS_ROOT=/sys
+  ETC_ROOT=/etc
+  MODULES_ROOT=/usr/lib/modules
+  validate_machine
+  validate_boot_tools
+  WORK_DIR=$(mktemp -d /tmp/surface-camera-boot-XXXXXX)
+  trap 'rm -rf -- "$WORK_DIR"' EXIT
+  configure "$1"
+}
+
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; fi
