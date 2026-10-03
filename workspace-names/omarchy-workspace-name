@@ -1,0 +1,117 @@
+#!/bin/bash
+
+set -euo pipefail
+
+plugin_id="${OMARCHY_WORKSPACE_WIDGET_ID:-${USER:-$(id -un)}.workspaces}"
+config_file="$HOME/.config/omarchy/shell.json"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  omarchy-workspace-name                 List workspace names
+  omarchy-workspace-name --current       Rename the current workspace
+  omarchy-workspace-name --prompt <1-10> Open the graphical rename prompt
+  omarchy-workspace-name <1-10> <name>  Set a workspace name
+  omarchy-workspace-name <1-10> --clear Clear a workspace name
+
+Examples:
+  omarchy-workspace-name 1 "Main"
+  omarchy-workspace-name 2 "Code"
+  omarchy-workspace-name 2 --clear
+USAGE
+}
+
+current_names() {
+  jq -cer --arg id "$plugin_id" '
+    [
+      .bar.layout.left[],
+      .bar.layout.center[],
+      .bar.layout.right[]
+    ]
+    | map(select((if type == "object" then .id else . end) == $id))
+    | if length == 0 then error("named workspace widget is not enabled")
+      else (.[0].names // {})
+      end
+  ' "$config_file"
+}
+
+list_names() {
+  current_names | jq -r '
+    . as $names
+    | range(1; 11)
+    | tostring as $id
+    | "\($id)\t\($names[$id] // "<unnamed>")"
+  '
+}
+
+if (( $# == 0 )); then
+  list_names
+  exit 0
+fi
+
+if [[ ${1:-} == "-h" || ${1:-} == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+prompt_mode=false
+if [[ ${1:-} == "--current" ]]; then
+  prompt_mode=true
+  workspace="$(hyprctl -j activeworkspace | jq -er '.id | select(. >= 1 and . <= 10)')"
+  shift
+elif [[ ${1:-} == "--prompt" ]]; then
+  prompt_mode=true
+  shift
+  workspace="${1:-}"
+  shift
+else
+  workspace="${1:-}"
+  shift
+fi
+
+[[ $workspace =~ ^([1-9]|10)$ ]] || {
+  echo "Workspace must be a number from 1 through 10." >&2
+  usage >&2
+  exit 2
+}
+
+if [[ $prompt_mode == true ]]; then
+  (( $# == 0 )) || {
+    echo "The graphical prompt only accepts a workspace number." >&2
+    exit 2
+  }
+
+  name="$(omarchy menu input "Name workspace $workspace" --width 360)" || exit 0
+  names="$(current_names)"
+  if [[ -n ${name//[[:space:]]/} ]]; then
+    names="$(jq -cn --argjson names "$names" --arg workspace "$workspace" --arg name "$name" '$names + {($workspace): $name}')"
+  else
+    names="$(jq -cn --argjson names "$names" --arg workspace "$workspace" '$names | del(.[$workspace])')"
+  fi
+  omarchy bar set "$plugin_id" names "$names" --json
+  exit 0
+fi
+
+(( $# > 0 )) || {
+  echo "Give the workspace a name, or use --clear." >&2
+  usage >&2
+  exit 2
+}
+
+names="$(current_names)"
+
+if [[ ${1:-} == "--clear" ]]; then
+  (( $# == 1 )) || {
+    echo "--clear does not accept a name." >&2
+    exit 2
+  }
+  names="$(jq -cn --argjson names "$names" --arg workspace "$workspace" '$names | del(.[$workspace])')"
+  omarchy bar set "$plugin_id" names "$names" --json
+  echo "Cleared the name for workspace $workspace."
+  exit 0
+fi
+
+name="$*"
+names="$(jq -cn --argjson names "$names" --arg workspace "$workspace" --arg name "$name" '$names + {($workspace): $name}')"
+omarchy bar set "$plugin_id" names "$names" --json
+echo "Workspace $workspace is now named: $name"

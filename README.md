@@ -22,6 +22,8 @@ promise of compatibility with every Surface or kernel.
 - An **optional, explicitly enabled** workaround for the tested IPU3 DMA fault.
 - [`scripts/configure-audio`](scripts/configure-audio): check, apply, and roll
   back the tested Intel AVS speaker workaround.
+- An optional [named-workspace widget](workspace-names/README.md) with a command
+  and keyboard prompt for labels on workspaces 1–10.
 - `uninstall.sh` and automated tests that do not access camera hardware.
 
 The app opens with the camera off. Closing its window, pressing Ctrl+D, or
@@ -89,6 +91,13 @@ working workaround selects Intel AVS at boot. Read the full
 [speaker-noise guide](docs/audio.md) before applying it; the helper includes
 exact hardware guards, conflict checks, rollback state, and an Omarchy UKI
 rebuild. It never unloads a live driver or reboots automatically.
+
+## Optional named workspaces
+
+To show labels such as **Main** or **Code** beside the workspace indicators,
+follow the [named-workspace guide](workspace-names/README.md). Its installer
+clones Omarchy's built-in workspace widget into your user config and installs
+the naming command. The camera installer does not change your bar or bindings.
 
 ## Optional camera DMA workaround
 

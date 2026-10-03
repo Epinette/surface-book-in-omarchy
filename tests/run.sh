@@ -13,7 +13,7 @@ for tool in python3 gst-launch-1.0 desktop-file-validate; do
 done
 
 shopt -s nullglob
-shell_files=(bin/surface-camera bin/surface-camera-dma bin/camera-feed-launch ./*.sh scripts/*.sh scripts/configure-audio scripts/configure-workaround tests/*.sh)
+shell_files=(bin/surface-camera bin/surface-camera-dma bin/camera-feed-launch ./*.sh scripts/*.sh scripts/configure-audio scripts/configure-workaround workspace-names/*.sh workspace-names/omarchy-workspace-name tests/*.sh)
 for script in "${shell_files[@]}"; do
   bash -n "$script"
 done
@@ -31,6 +31,7 @@ PY
 python3 tests/test_camera_feed.py
 bash tests/test_surface_camera.sh
 bash tests/test_audio_config.sh
+bash tests/test_workspace_names.sh
 
 # Installer checks use temporary homes and fake privilege commands.
 for test in tests/test_install*.sh; do
