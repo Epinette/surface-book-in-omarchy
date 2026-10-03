@@ -1,0 +1,11 @@
+
+-- BEGIN surface-book-in-omarchy keyboard languages
+-- Left Alt + Right Alt cycles US, French (Canada), and Chinese Pinyin.
+hl.config({
+  input = {
+    kb_layout = "us,ca,cn",
+    kb_variant = ",fr,",
+    kb_options = "compose:caps,shift:both_capslock_cancel,grp:alts_toggle",
+  },
+})
+-- END surface-book-in-omarchy keyboard languages

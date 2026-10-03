@@ -24,6 +24,9 @@ promise of compatibility with every Surface or kernel.
   back the tested Intel AVS speaker workaround.
 - An optional [named-workspace widget](workspace-names/README.md) with a command
   and keyboard prompt for labels on workspaces 1–10.
+- An optional [three-language keyboard setup](keyboard-languages/README.md) for
+  US English, French (Canada), and Simplified Chinese Pinyin, switched with both
+  Alt keys.
 - `uninstall.sh` and automated tests that do not access camera hardware.
 
 The app opens with the camera off. Closing its window, pressing Ctrl+D, or
@@ -98,6 +101,16 @@ To show labels such as **Main** or **Code** beside the workspace indicators,
 follow the [named-workspace guide](workspace-names/README.md). Its installer
 clones Omarchy's built-in workspace widget into your user config and installs
 the naming command. The camera installer does not change your bar or bindings.
+
+## Optional keyboard languages
+
+To reproduce the English (US), French (Canada), and Simplified Chinese Pinyin
+setup on another Omarchy 4 laptop, follow the
+[keyboard-language guide](keyboard-languages/README.md) and run its separate
+installer. **Left Alt + Right Alt** cycles all three, with US English first.
+The setup uses Omarchy's XKB layout switch and a small user service to keep
+Fcitx5's input method in step. The camera installer does not change keyboard
+settings.
 
 ## Optional camera DMA workaround
 
@@ -220,8 +233,9 @@ is usable only while the camera driver is still unloaded.
 Tests require Python 3, Bash, desktop-file-utils, GStreamer tools and base plugins.
 They cover command lifecycle, duplicate instances, startup errors, termination,
 camera selection, GStreamer argument escaping, consent gates, and the guarded
-audio configuration/rollback logic. They use temporary files, fake camera
-processes, or synthetic GStreamer frames, never live hardware. GitHub Actions
+audio configuration/rollback logic, plus the optional keyboard installer. They
+use temporary files, fake camera processes, or synthetic GStreamer frames,
+never live hardware. GitHub Actions
 runs the same checks.
 
 The initial hardware validation received live front-camera frames repeatedly,

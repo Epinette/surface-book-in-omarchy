@@ -1,0 +1,15 @@
+[Unit]
+Description=Sync Omarchy keyboard layout with Fcitx input method
+After=graphical-session.target omarchy-fcitx5.service
+Wants=omarchy-fcitx5.service
+PartOf=graphical-session.target
+ConditionEnvironment=HYPRLAND_INSTANCE_SIGNATURE
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/omarchy-input-language-sync
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

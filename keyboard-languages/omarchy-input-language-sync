@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+"""Keep Fcitx input methods aligned with Omarchy's XKB layout switch."""
+
+import json
+import os
+import socket
+import subprocess
+import sys
+import time
+
+
+CONTROLLER = [
+    "gdbus", "call", "--session", "--dest", "org.fcitx.Fcitx5",
+    "--object-path", "/controller", "--method",
+]
+METHODS = {
+    0: ("keyboard-us", "Deactivate"),
+    1: ("keyboard-ca", "Activate"),
+    2: ("pinyin", "Activate"),
+}
+
+
+def run(*args):
+    return subprocess.run(args, check=True, capture_output=True, text=True)
+
+
+def sync(device_name=None):
+    devices = json.loads(run("hyprctl", "devices", "-j").stdout)
+    keyboard = next(
+        (item for item in devices["keyboards"] if item["name"] == device_name),
+        None,
+    )
+    if keyboard is None:
+        keyboard = next((item for item in devices["keyboards"] if item.get("main")), None)
+    if keyboard is None:
+        return
+    index = keyboard["active_layout_index"]
+    if index not in METHODS:
+        return
+    method, state = METHODS[index]
+    run(*CONTROLLER, "org.fcitx.Fcitx.Controller1.SetCurrentIM", method)
+    run(*CONTROLLER, "org.fcitx.Fcitx.Controller1." + state)
+
+
+def main():
+    path = os.path.join(
+        os.environ["XDG_RUNTIME_DIR"], "hypr",
+        os.environ["HYPRLAND_INSTANCE_SIGNATURE"], ".socket2.sock",
+    )
+    while True:
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+                connection.connect(path)
+                sync()
+                with connection.makefile("r") as events:
+                    for event in events:
+                        if event.startswith("activelayout>>"):
+                            device_name = event.partition(">>")[2].partition(",")[0]
+                            sync(device_name)
+                        elif event.startswith("configreloaded>>"):
+                            sync()
+        except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
+            print(f"input language sync: {error}", file=sys.stderr, flush=True)
+        time.sleep(1)
+
+
+if __name__ == "__main__":
+    main()
