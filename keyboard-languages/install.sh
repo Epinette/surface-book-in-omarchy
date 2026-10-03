@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Optional US / French (Canada) / Simplified Chinese input for Omarchy 4.
+# Optional US / Canadian Multilingual Standard / Simplified Chinese input for Omarchy 4.
 set -Eeuo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
@@ -15,7 +15,7 @@ fail() { printf 'keyboard-languages: %s\n' "$*" >&2; exit 1; }
 
 (( EUID != 0 )) || fail 'Run as your desktop user, without sudo.'
 [[ -f $input && ! -L $input ]] || fail "Expected a regular Omarchy input file at $input"
-for command in omarchy hyprctl systemctl python3 grep; do
+for command in omarchy hyprctl systemctl python3 sha256sum; do
   command -v "$command" >/dev/null || fail "Missing command: $command"
 done
 for target in "$profile" "$fcitx_config"; do
@@ -44,7 +44,8 @@ allowed = ({"Groups/0", "Groups/0/Items/0", "GroupOrder"},
            {"Groups/0", "Groups/0/Items/0", "Groups/0/Items/1",
             "Groups/0/Items/2", "GroupOrder"})
 if sections not in allowed or items not in (["keyboard-us"],
-                                              ["keyboard-us", "keyboard-ca", "pinyin"]):
+                                              ["keyboard-us", "keyboard-ca", "pinyin"],
+                                              ["keyboard-us", "keyboard-ca-multix", "pinyin"]):
     raise SystemExit("Fcitx profile has other input methods; review it and the "
                      "documented manual steps before replacing it.")
 PY
@@ -53,7 +54,13 @@ for target in "$command_target" "$service_target"; do
   if [[ -e $target || -L $target ]]; then
     [[ -f $target && ! -L $target ]] || fail "Review existing $target before installing."
     source_file=$here/$(basename "$target")
-    cmp -s -- "$source_file" "$target" || fail "Review existing $target before installing."
+    if ! cmp -s -- "$source_file" "$target"; then
+      # An exact copy of the previous sync command can be upgraded safely.
+      old_sync_sha=fd4274cdbcc6d2e96b74239eb882ac207ecbab42ac79e96b43c9918c5b394b08
+      current_sha=$(sha256sum < "$target")
+      [[ $target == "$command_target" && ${current_sha%% *} == "$old_sync_sha" ]] ||
+        fail "Review existing $target before installing."
+    fi
   fi
 done
 
@@ -63,10 +70,14 @@ import sys
 
 text = Path(sys.argv[1]).read_text()
 block = Path(sys.argv[2]).read_text().strip()
+old_block = block.replace("Canadian Multilingual Standard", "French (Canada)").replace(
+    'kb_variant = ",multix,"', 'kb_variant = ",fr,"')
 start = "-- BEGIN surface-book-in-omarchy keyboard languages"
 end = "-- END surface-book-in-omarchy keyboard languages"
 if start in text or end in text:
-    if text.count(start) != 1 or text.count(end) != 1 or block not in text:
+    if text.count(start) != 1 or text.count(end) != 1 or not any(
+        candidate in text for candidate in (block, old_block)
+    ):
         raise SystemExit("The existing keyboard-language block was changed; review it first.")
 PY
 
@@ -112,9 +123,21 @@ os.chmod(temp_path, 0o644)
 os.replace(temp_path, path)
 PY
 
-if ! grep -q '^-- BEGIN surface-book-in-omarchy keyboard languages$' "$input"; then
-  cat "$here/input.lua.append" >> "$input"
-fi
+python3 - "$input" "$here/input.lua.append" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+snippet = Path(sys.argv[2]).read_text()
+new = snippet.strip()
+old = new.replace("Canadian Multilingual Standard", "French (Canada)").replace(
+    'kb_variant = ",multix,"', 'kb_variant = ",fr,"')
+text = path.read_text()
+if old in text:
+    path.write_text(text.replace(old, new, 1))
+elif new not in text:
+    path.write_text(text + snippet)
+PY
 install -Dm755 -- "$here/omarchy-input-language-sync" "$command_target"
 install -Dm644 -- "$here/omarchy-input-language-sync.service" "$service_target"
 
@@ -126,4 +149,4 @@ errors=$(hyprctl configerrors)
 systemctl --user daemon-reload
 systemctl --user enable --now omarchy-input-language-sync.service
 systemctl --user is-active --quiet omarchy-input-language-sync.service || fail 'Input sync service did not start.'
-printf 'Installed US, French (Canada), and Simplified Chinese Pinyin. Press Left Alt + Right Alt to cycle.\n'
+printf 'Installed US, Canadian Multilingual Standard, and Simplified Chinese Pinyin. Press Left Alt + Right Alt to cycle.\n'

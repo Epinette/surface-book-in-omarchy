@@ -25,8 +25,8 @@ promise of compatibility with every Surface or kernel.
 - An optional [named-workspace widget](workspace-names/README.md) with a command
   and keyboard prompt for labels on workspaces 1–10.
 - An optional [three-language keyboard setup](keyboard-languages/README.md) for
-  US English, French (Canada), and Simplified Chinese Pinyin, switched with both
-  Alt keys.
+  US English, Canadian Multilingual Standard, and Simplified Chinese Pinyin,
+  switched with both Alt keys.
 - `uninstall.sh` and automated tests that do not access camera hardware.
 
 The app opens with the camera off. Closing its window, pressing Ctrl+D, or
@@ -104,8 +104,8 @@ the naming command. The camera installer does not change your bar or bindings.
 
 ## Optional keyboard languages
 
-To reproduce the English (US), French (Canada), and Simplified Chinese Pinyin
-setup on another Omarchy 4 laptop, follow the
+To reproduce the English (US), Canadian Multilingual Standard, and Simplified
+Chinese Pinyin setup on another Omarchy 4 laptop, follow the
 [keyboard-language guide](keyboard-languages/README.md) and run its separate
 installer. **Left Alt + Right Alt** cycles all three, with US English first.
 The setup uses Omarchy's XKB layout switch and a small user service to keep

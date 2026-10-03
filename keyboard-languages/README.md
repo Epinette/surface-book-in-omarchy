@@ -1,10 +1,10 @@
-# US, Canadian French, and Simplified Chinese keyboards
+# US, Canadian Multilingual Standard, and Simplified Chinese keyboards
 
 This optional Omarchy 4 setup starts with **English (US)**. Press **Left Alt +
-Right Alt together** to cycle through English (US), French (Canada), Simplified
-Chinese Pinyin, and back to English. The order in which you press the two Alt
-keys does not matter. The Omarchy bar shows the selected XKB layout; Chinese
-uses a US-shaped physical layout while Fcitx5 converts Pinyin to Simplified
+Right Alt together** to cycle through English (US), Canadian Multilingual
+Standard, Simplified Chinese Pinyin, and back to English. The order in which
+you press the two Alt keys does not matter. The Omarchy bar shows the selected
+XKB layout; Chinese uses a US-shaped physical layout while Fcitx5 converts Pinyin to Simplified
 Chinese characters.
 
 The setup was checked on a Surface Book 2 running Omarchy 4.0.4. It uses
@@ -26,9 +26,11 @@ existing input files under `~/.local/state/omarchy-input-languages-*`, then:
 
 1. Adds the [three XKB layouts](input.lua.append) and `grp:alts_toggle` to
    `~/.config/hypr/input.lua`. The first layout remains `us` for Omarchy's
-   shortcuts.
-2. Sets [Fcitx5's input methods](profile) to `keyboard-us`, `keyboard-ca`, and
-   `pinyin`; keeps the selected method across applications.
+   shortcuts. The French position is `ca(multix)`, shown as **Canadian (CSA)**
+   in Hyprland.
+2. Sets [Fcitx5's input methods](profile) to `keyboard-us`,
+   `keyboard-ca-multix`, and `pinyin`; keeps the selected method across
+   applications.
 3. Installs the [sync command](omarchy-input-language-sync) and a user
    [systemd service](omarchy-input-language-sync.service). Hyprland's two-Alt
    shortcut only changes an XKB layout. The service notices each layout change
@@ -36,10 +38,11 @@ existing input files under `~/.local/state/omarchy-input-languages-*`, then:
    position produce characters rather than merely change the keyboard label.
 
 The installer preserves your other settings in `input.lua` and Fcitx's global
-config. It refuses to replace a Fcitx profile with other input methods or an
-existing sync command/service with different content. Review and merge those
-files manually if that laptop has a custom input setup. Re-running the
-installer is safe when its marked `input.lua` block is unchanged.
+config. It upgrades an unmodified earlier version of this setup that used
+French (Canada). It refuses to replace a Fcitx profile with other input
+methods or an existing sync command/service with different content. Review and
+merge those files manually if that laptop has a custom input setup. Re-running
+the installer is safe when its marked `input.lua` block is unchanged.
 
 After installation, open a text field and try the shortcut. Typing `nihao` in
 the Chinese position should offer `你好`. Check the service and configuration

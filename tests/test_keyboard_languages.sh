@@ -48,11 +48,24 @@ export PATH="$test_home/fake-bin:$PATH"
 [[ $(grep -c '^-- BEGIN surface-book-in-omarchy keyboard languages$' "$HOME/.config/hypr/input.lua") == 1 ]]
 grep -q 'natural_scroll = true' "$HOME/.config/hypr/input.lua"
 grep -q 'kb_layout = "us,ca,cn"' "$HOME/.config/hypr/input.lua"
+grep -q 'kb_variant = ",multix,"' "$HOME/.config/hypr/input.lua"
+grep -q '^Name=keyboard-ca-multix$' "$HOME/.config/fcitx5/profile"
 grep -q '^Name=pinyin$' "$HOME/.config/fcitx5/profile"
 grep -q '^ShareInputState=All$' "$HOME/.config/fcitx5/config"
 grep -q '^0=Control+space$' "$HOME/.config/fcitx5/config"
 [[ -x $HOME/.local/bin/omarchy-input-language-sync ]]
 [[ -f $HOME/.config/systemd/user/omarchy-input-language-sync.service ]]
+
+# Upgrade the exact earlier French (Canada) version without duplicating the block.
+sed -i 's/Canadian Multilingual Standard/French (Canada)/; s/kb_variant = ",multix,"/kb_variant = ",fr,"/' \
+  "$HOME/.config/hypr/input.lua"
+sed -i 's/^Name=keyboard-ca-multix$/Name=keyboard-ca/' "$HOME/.config/fcitx5/profile"
+sed -i 's/keyboard-ca-multix/keyboard-ca/' "$HOME/.local/bin/omarchy-input-language-sync"
+"$repo/keyboard-languages/install.sh" >/dev/null
+[[ $(grep -c '^-- BEGIN surface-book-in-omarchy keyboard languages$' "$HOME/.config/hypr/input.lua") == 1 ]]
+grep -q 'kb_variant = ",multix,"' "$HOME/.config/hypr/input.lua"
+grep -q '^Name=keyboard-ca-multix$' "$HOME/.config/fcitx5/profile"
+cmp -s "$repo/keyboard-languages/omarchy-input-language-sync" "$HOME/.local/bin/omarchy-input-language-sync"
 
 # A laptop with other input methods must not lose them on install.
 sed -i 's/^Name=pinyin$/Name=rime/' "$HOME/.config/fcitx5/profile"
@@ -61,4 +74,4 @@ if "$repo/keyboard-languages/install.sh" >/dev/null 2>&1; then
   exit 1
 fi
 grep -q '^Name=rime$' "$HOME/.config/fcitx5/profile"
-printf 'PASS: Keyboard language install, repeat install, and custom-profile guard.\n'
+printf 'PASS: Keyboard language install, repeat install, upgrade, and custom-profile guard.\n'

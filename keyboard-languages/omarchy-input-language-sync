@@ -15,7 +15,7 @@ CONTROLLER = [
 ]
 METHODS = {
     0: ("keyboard-us", "Deactivate"),
-    1: ("keyboard-ca", "Activate"),
+    1: ("keyboard-ca-multix", "Activate"),
     2: ("pinyin", "Activate"),
 }
 
