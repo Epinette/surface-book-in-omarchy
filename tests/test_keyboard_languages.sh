@@ -45,12 +45,12 @@ export PATH="$test_home/fake-bin:$PATH"
 "$repo/keyboard-languages/install.sh" >/dev/null
 "$repo/keyboard-languages/install.sh" >/dev/null
 
-[[ $(rg -c '^-- BEGIN surface-book-in-omarchy keyboard languages$' "$HOME/.config/hypr/input.lua") == 1 ]]
-rg -q 'natural_scroll = true' "$HOME/.config/hypr/input.lua"
-rg -q 'kb_layout = "us,ca,cn"' "$HOME/.config/hypr/input.lua"
-rg -q '^Name=pinyin$' "$HOME/.config/fcitx5/profile"
-rg -q '^ShareInputState=All$' "$HOME/.config/fcitx5/config"
-rg -q '^0=Control\+space$' "$HOME/.config/fcitx5/config"
+[[ $(grep -c '^-- BEGIN surface-book-in-omarchy keyboard languages$' "$HOME/.config/hypr/input.lua") == 1 ]]
+grep -q 'natural_scroll = true' "$HOME/.config/hypr/input.lua"
+grep -q 'kb_layout = "us,ca,cn"' "$HOME/.config/hypr/input.lua"
+grep -q '^Name=pinyin$' "$HOME/.config/fcitx5/profile"
+grep -q '^ShareInputState=All$' "$HOME/.config/fcitx5/config"
+grep -q '^0=Control+space$' "$HOME/.config/fcitx5/config"
 [[ -x $HOME/.local/bin/omarchy-input-language-sync ]]
 [[ -f $HOME/.config/systemd/user/omarchy-input-language-sync.service ]]
 
@@ -60,5 +60,5 @@ if "$repo/keyboard-languages/install.sh" >/dev/null 2>&1; then
   printf 'Expected custom Fcitx profile to be preserved.\n' >&2
   exit 1
 fi
-rg -q '^Name=rime$' "$HOME/.config/fcitx5/profile"
+grep -q '^Name=rime$' "$HOME/.config/fcitx5/profile"
 printf 'PASS: Keyboard language install, repeat install, and custom-profile guard.\n'

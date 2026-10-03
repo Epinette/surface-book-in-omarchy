@@ -15,7 +15,7 @@ fail() { printf 'keyboard-languages: %s\n' "$*" >&2; exit 1; }
 
 (( EUID != 0 )) || fail 'Run as your desktop user, without sudo.'
 [[ -f $input && ! -L $input ]] || fail "Expected a regular Omarchy input file at $input"
-for command in omarchy hyprctl systemctl python3 rg; do
+for command in omarchy hyprctl systemctl python3 grep; do
   command -v "$command" >/dev/null || fail "Missing command: $command"
 done
 for target in "$profile" "$fcitx_config"; do
@@ -112,7 +112,7 @@ os.chmod(temp_path, 0o644)
 os.replace(temp_path, path)
 PY
 
-if ! rg -q '^-- BEGIN surface-book-in-omarchy keyboard languages$' "$input"; then
+if ! grep -q '^-- BEGIN surface-book-in-omarchy keyboard languages$' "$input"; then
   cat "$here/input.lua.append" >> "$input"
 fi
 install -Dm755 -- "$here/omarchy-input-language-sync" "$command_target"
